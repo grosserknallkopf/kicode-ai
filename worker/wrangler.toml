@@ -1,0 +1,16 @@
+name = "kicode-ai-proxy"
+type = "javascript"
+main = "worker.js"
+account_id = "6899742bcf2b9644fa6f01faf5575fa0"
+compatibility_date = "2025-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+GATEWAY_URL = "https://ai-gateway.vercel.sh"
+
+[env.production]
+workers_dev = true
+
+[env.production.vars]
+GATEWAY_URL = "https://ai-gateway.vercel.sh"
