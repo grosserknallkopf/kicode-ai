@@ -28,12 +28,12 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
   const { messages, input, handleInputChange, handleSubmit, status, error, reload } =
     useChat({
       api: "/api/chat",
-      onToolCall({ toolCall }) {
+      onToolCall({ toolCall }: { toolCall: any }) {
         if (
           toolCall.toolName === "executeCode" &&
           toolCall.state === "result"
         ) {
-          const result = toolCall.result as any;
+          const result = (toolCall.result ?? toolCall.output ?? toolCall.input) as any;
           if (result?.code) {
             setActiveCode({
               code: result.code,
@@ -146,7 +146,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         strokeWidth={2}
-                        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
+                        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 003.09-3.09z"
                       />
                     </svg>
                   </div>
@@ -236,14 +236,14 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
 
                   {/* Tool Calls */}
                   {message.parts?.map((part, i) => {
-                    if (part.type === "tool-invocation") {
-                      const { toolInvocation } = part;
+                    if (part.type === "tool-invocation" || part.type.startsWith("tool-")) {
+                      const toolInvocation = part as any;
                       return (
                         <div
                           key={i}
                           className="flex items-center gap-2 text-xs text-muted-foreground bg-secondary/50 rounded-lg px-3 py-2 mt-2"
                         >
-                          {toolInvocation.state === "result" ? (
+                          {(toolInvocation.state === "result" || toolInvocation.output !== undefined) ? (
                             <svg
                               className="w-3.5 h-3.5 text-green-500"
                               fill="none"
@@ -280,7 +280,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                           )}
                           <span>
                             🛠️ {toolInvocation.toolName}
-                            {toolInvocation.state === "result"
+                            {(toolInvocation.state === "result" || toolInvocation.output !== undefined)
                               ? " ✓ Erledigt"
                               : " läuft…"}
                           </span>
@@ -312,7 +312,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
+                      d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25 9.813 15.904z"
                     />
                   </svg>
                 </div>

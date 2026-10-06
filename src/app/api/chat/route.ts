@@ -37,5 +37,5 @@ Dein Motto: "Code → Ausführen → Ergebnis sehen!"`,
     },
   });
 
-  return result.toDataStreamResponse();
+  return result.toUIMessageStreamResponse();
 }
