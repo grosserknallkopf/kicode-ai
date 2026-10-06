@@ -9,7 +9,6 @@ import type { GatewayProviderOptions } from "@ai-sdk/gateway";
  * - disallowPromptTraining: true → KEINE Provider, die Prompts für Training nutzen
  * - has: ['tool-use'] → nur Provider die Tool-Calls unterstützen
  */
-
 export const gateway = createGateway({
   apiKey: process.env.AI_GATEWAY_API_KEY ?? "",
 });
