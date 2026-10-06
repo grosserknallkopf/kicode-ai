@@ -1,4 +1,4 @@
-import { streamText, convertToCoreMessages } from "ai";
+import { streamText, convertToModelMessages } from "ai";
 import { auth } from "@/lib/auth";
 import { gateway, PRIMARY_MODEL, getGatewayOptions } from "@/lib/gateway";
 import { agentTools } from "@/lib/tools";
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: gateway(PRIMARY_MODEL),
-    messages: convertToCoreMessages(messages),
+    messages: convertToModelMessages(messages),
     system: `Du bist KiCode AI – ein agentischer KI-Programmierassistent für eine Schul-Programmier-AG.
 Deine Aufgabe ist es, Nutzern beim Programmieren zu helfen.
 
