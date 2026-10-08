@@ -1,4 +1,4 @@
-import { streamText, convertToModelMessages } from "ai";
+import { streamText, convertToCoreMessages } from "ai";
 import { auth } from "@/lib/auth";
 import { gateway, PRIMARY_MODEL, getGatewayOptions } from "@/lib/gateway";
 import { agentTools } from "@/lib/tools";
@@ -15,7 +15,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: gateway(PRIMARY_MODEL),
-    messages: await convertToModelMessages(messages),
+    messages: convertToCoreMessages(messages),
     system: `Du bist KiCode AI – ein agentischer KI-Programmierassistent für eine Schul-Programmier-AG.
 Deine Aufgabe ist es, Nutzern beim Programmieren zu helfen.
 
@@ -29,13 +29,13 @@ WICHTIGE REGELN:
 
 Dein Motto: "Code → Ausführen → Ergebnis sehen!"`,
     tools: agentTools,
-    providerOptions: getGatewayOptions(session.user.id, ["chat"]),
+    providerOptions: getGatewayOptions(session.user.id, ["chat"]) as any,
     onFinish({ text, usage }) {
       console.log(
-        `[KiCode] User ${session.user?.id}: ${usage.totalTokens} tokens`
+        `[KiCode] User ${session.user.id}: ${usage.totalTokens} tokens`
       );
     },
   });
 
-  return result.toTextStreamResponse();
+  return result.toDataStreamResponse();
 }

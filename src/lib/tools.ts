@@ -43,7 +43,7 @@ export const executeCode = tool({
             entrypoint:
               language === "html"
                 ? undefined
-                : filename || `code.${language === "html" ? "html" : "js"}`,
+                : filename || `code.js`,
             timeout: 30000,
           }),
         });
