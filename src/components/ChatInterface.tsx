@@ -1,6 +1,7 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
+import { DefaultChatTransport } from "ai";
 import { useRef, useEffect, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,30 +25,42 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [activeCode, setActiveCode] = useState<CodeFile | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [input, setInput] = useState("");
 
-  const { messages, input, handleInputChange, handleSubmit, status, error, reload } =
-    useChat({
-      api: "/api/chat",
-      onToolCall({ toolCall }) {
-        if (
-          toolCall.toolName === "executeCode" &&
-          (toolCall as any).state === "result"
-        ) {
-          const result = (toolCall as any).result as any;
-          if (result?.code) {
-            setActiveCode({
-              code: result.code,
-              language: result.language || "javascript",
-              filename: result.filename,
-            });
-            setShowPreview(true);
-          }
-          if (result?.output) {
-            console.log("[Sandbox]", result.output);
-          }
+  const { messages, status, error, sendMessage, regenerate } = useChat({
+    transport: new DefaultChatTransport({ api: "/api/chat" }),
+    onToolCall({ toolCall }) {
+      // Tool results are rendered from message.parts in AI SDK v7.
+      // Keep this callback for compatibility with client-side tool calls.
+      const call = toolCall as any;
+      if (call.toolName === "executeCode" && call.state === "result") {
+        const result = call.result as any;
+        if (result?.code) {
+          setActiveCode({
+            code: result.code,
+            language: result.language || "javascript",
+            filename: result.filename,
+          });
+          setShowPreview(true);
         }
-      },
-    });
+        if (result?.output) {
+          console.log("[Sandbox]", result.output);
+        }
+      }
+    },
+  });
+
+  const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    setInput(event.target.value);
+  };
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = input.trim();
+    if (!text || status === "submitted" || status === "streaming") return;
+    setInput("");
+    sendMessage({ text });
+  };
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -109,16 +122,11 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                     <button
                       key={suggestion}
                       onClick={() => {
-                        const fakeEvent = {
-                          preventDefault: () => {},
-                        } as React.FormEvent;
-                        handleInputChange({
-                          target: { value: suggestion },
-                        } as React.ChangeEvent<HTMLInputElement>);
-                        setTimeout(
-                          () => handleSubmit(fakeEvent),
-                          100
-                        );
+                        setInput(suggestion);
+                        setTimeout(() => {
+                          setInput("");
+                          sendMessage({ text: suggestion });
+                        }, 100);
                       }}
                       className="text-xs bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground rounded-full px-3 py-1.5 transition-colors"
                     >
@@ -146,7 +154,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         strokeWidth={2}
-                        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
+                        d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09L9.813 15.904z"
                       />
                     </svg>
                   </div>
@@ -160,7 +168,12 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                   }`}
                 >
                   {/* Text content */}
-                  {message.content && (
+                  {(() => {
+                    const textContent = message.parts
+                      ?.filter((part) => part.type === "text")
+                      .map((part) => (part as { text: string }).text)
+                      .join("") ?? "";
+                    return textContent ? (
                     <div className="prose prose-sm prose-invert max-w-none">
                       <ReactMarkdown
                         remarkPlugins={[remarkGfm]}
@@ -229,21 +242,27 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                           },
                         }}
                       >
-                        {message.content || "🤔"}
+                        {textContent || "🤔"}
                       </ReactMarkdown>
                     </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Tool Calls */}
                   {message.parts?.map((part, i) => {
-                    if (part.type === "tool-invocation") {
-                      const { toolInvocation } = part;
+                    if (part.type.startsWith("tool-")) {
+                      const toolPart = part as typeof part & {
+                        state: string;
+                        toolCallId: string;
+                        args?: unknown;
+                        result?: unknown;
+                      };
                       return (
                         <div
                           key={i}
                           className="flex items-center gap-2 text-xs text-muted-foreground bg-secondary/50 rounded-lg px-3 py-2 mt-2"
                         >
-                          {toolInvocation.state === "result" ? (
+                          {toolPart.state === "result" ? (
                             <svg
                               className="w-3.5 h-3.5 text-green-500"
                               fill="none"
@@ -279,8 +298,8 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                             </svg>
                           )}
                           <span>
-                            🛠️ {toolInvocation.toolName}
-                            {toolInvocation.state === "result"
+                            🛠️ {part.type.replace(/^tool-/, "")}
+                            {toolPart.state === "result"
                               ? " ✓ Erledigt"
                               : " läuft…"}
                           </span>
@@ -312,7 +331,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                       strokeLinecap="round"
                       strokeLinejoin="round"
                       strokeWidth={2}
-                      d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"
+                      d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09L9.813 15.904z"
                     />
                   </svg>
                 </div>
@@ -332,7 +351,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                   <p className="font-medium mb-1">Fehler</p>
                   <p className="text-destructive/80">{error.message}</p>
                   <button
-                    onClick={() => reload()}
+                    onClick={() => regenerate()}
                     className="mt-2 text-xs underline hover:no-underline"
                   >
                     Erneut versuchen
@@ -356,11 +375,11 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
               onChange={handleInputChange}
               placeholder="Beschreibe, was du programmieren möchtest…"
               className="flex-1 bg-secondary rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary/50 transition-all placeholder:text-muted-foreground"
-              disabled={status === "submitted"}
+              disabled={status === "submitted" || status === "streaming"}
             />
             <button
               type="submit"
-              disabled={status === "submitted" || !input.trim()}
+              disabled={status === "submitted" || status === "streaming" || !input.trim()}
               className="bg-primary text-primary-foreground rounded-xl px-5 py-3 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 shrink-0"
             >
               <svg
@@ -390,3 +409,4 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
     </div>
   );
 }
+
