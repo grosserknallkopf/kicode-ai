@@ -15,7 +15,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: gateway(PRIMARY_MODEL),
-    messages: convertToModelMessages(messages),
+    messages: await convertToModelMessages(messages),
     system: `Du bist KiCode AI – ein agentischer KI-Programmierassistent für eine Schul-Programmier-AG.
 Deine Aufgabe ist es, Nutzern beim Programmieren zu helfen.
 
@@ -37,5 +37,5 @@ Dein Motto: "Code → Ausführen → Ergebnis sehen!"`,
     },
   });
 
-  return result.toUIMessageStreamResponse();
+  return result.toTextStreamResponse();
 }

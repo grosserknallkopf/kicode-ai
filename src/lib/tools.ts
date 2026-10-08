@@ -22,7 +22,6 @@ export const executeCode = tool({
       .describe("Optionaler Dateiname (z.B. index.html)"),
   }),
   execute: async ({ code, language, filename }) => {
-    const isHtml = language.toLowerCase() === "html";
     const sandboxToken = process.env.SANDBOX_API_TOKEN;
 
     if (sandboxToken) {
@@ -37,13 +36,14 @@ export const executeCode = tool({
             runtime: language === "python" ? "python3" : "node20",
             files: [
               {
-                path: filename || `code.${isHtml ? "html" : "js"}`,
+                path: filename || `code.${language === "html" ? "html" : "js"}`,
                 content: code,
               },
             ],
-            entrypoint: isHtml
-              ? undefined
-              : filename || `code.${isHtml ? "html" : "js"}`,
+            entrypoint:
+              language === "html"
+                ? undefined
+                : filename || `code.${language === "html" ? "html" : "js"}`,
             timeout: 30000,
           }),
         });
