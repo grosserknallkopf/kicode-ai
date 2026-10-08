@@ -1,10 +1,23 @@
 import { auth, signIn } from "@/lib/auth";
+import { AuthError } from "next-auth";
 import { redirect } from "next/navigation";
 import { SignInButton } from "@/components/SignInButton";
 
-export default async function LoginPage() {
+interface LoginPageProps {
+  searchParams?: Promise<{ error?: string }>;
+}
+
+export default async function LoginPage({ searchParams }: LoginPageProps) {
   const session = await auth();
   if (session?.user) redirect("/");
+  const params = searchParams ? await searchParams : undefined;
+  const hasCredentialsError = params?.error === "credentials";
+  const hasGithubProvider = !!(
+    process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET
+  );
+  const hasGoogleProvider = !!(
+    process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET
+  );
 
   return (
     <div className="flex items-center justify-center h-full">
@@ -31,23 +44,77 @@ export default async function LoginPage() {
           </p>
         </div>
 
+        <form
+          action={async (formData) => {
+            "use server";
+            const username = formData.get("username");
+            const password = formData.get("password");
+
+            try {
+              await signIn("credentials", {
+                username: typeof username === "string" ? username : "",
+                password: typeof password === "string" ? password : "",
+                redirectTo: "/",
+              });
+            } catch (error) {
+              if (error instanceof AuthError) {
+                redirect("/login?error=credentials");
+              }
+              throw error;
+            }
+          }}
+          className="space-y-3"
+        >
+          <input
+            type="text"
+            name="username"
+            placeholder="Benutzername"
+            autoComplete="username"
+            required
+            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <input
+            type="password"
+            name="password"
+            placeholder="Passwort"
+            autoComplete="current-password"
+            required
+            className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          {hasCredentialsError ? (
+            <p className="text-xs text-destructive">
+              Anmeldung fehlgeschlagen. Bitte Benutzername und Passwort prüfen.
+            </p>
+          ) : null}
+          <button
+            type="submit"
+            className="w-full px-4 py-3 rounded-xl bg-primary text-primary-foreground hover:opacity-90 transition-opacity text-sm font-medium"
+          >
+            Mit Benutzername & Passwort anmelden
+          </button>
+        </form>
+
         <div className="space-y-3">
-          <SignInButton
-            provider="github"
-            label="Mit GitHub anmelden"
-            action={async () => {
-              "use server";
-              await signIn("github", { redirectTo: "/" });
-            }}
-          />
-          <SignInButton
-            provider="google"
-            label="Mit Google anmelden"
-            action={async () => {
-              "use server";
-              await signIn("google", { redirectTo: "/" });
-            }}
-          />
+          {hasGithubProvider ? (
+            <SignInButton
+              provider="github"
+              label="Mit GitHub anmelden"
+              action={async () => {
+                "use server";
+                await signIn("github", { redirectTo: "/" });
+              }}
+            />
+          ) : null}
+          {hasGoogleProvider ? (
+            <SignInButton
+              provider="google"
+              label="Mit Google anmelden"
+              action={async () => {
+                "use server";
+                await signIn("google", { redirectTo: "/" });
+              }}
+            />
+          ) : null}
         </div>
 
         <p className="text-xs text-center text-muted-foreground">
