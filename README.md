@@ -18,7 +18,7 @@ Zusätzlich optional für OAuth:
 
 Für Cloudflare Worker Deploy mit OpenNext:
 
-- Build Command: `npm run build`
-- Deploy Command: `npm run deploy`
+- Build Command: `npm run build:cloudflare`
+- Deploy Command: `npm run deploy:cloudflare`
 
 Damit wird nur noch ein OpenNext-Build verwendet und anschließend das bereits gebaute Artefakt deployed.
