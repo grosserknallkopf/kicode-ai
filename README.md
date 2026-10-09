@@ -18,7 +18,7 @@ Zusätzlich optional für OAuth:
 
 Für Cloudflare Worker Deploy mit OpenNext:
 
-- Build Command: `npm run build:cloudflare`
-- Deploy Command: `npm run deploy:cloudflare`
+- Build Command: `npm run build`
+- Deploy Command: `npx wrangler deploy` (alternativ `npm run deploy:cloudflare`)
 
-Damit wird nur noch ein OpenNext-Build verwendet und anschließend das bereits gebaute Artefakt deployed.
+Damit wird beim Build direkt das OpenNext-Artefakt erzeugt, das Wrangler im Deploy-Schritt erwartet.
