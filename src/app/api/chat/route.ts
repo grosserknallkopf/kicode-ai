@@ -48,7 +48,7 @@ export async function POST(req: Request) {
 
   if (!process.env.AI_GATEWAY_API_KEY) {
     return new Response(
-      "AI_GATEWAY_API_KEY ist nicht konfiguriert. Bitte als Worker-Secret setzen.",
+      "AI_GATEWAY_API_KEY ist nicht konfiguriert. Bitte als Umgebungsvariable setzen.",
       { status: 500 }
     );
   }

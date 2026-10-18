@@ -5,6 +5,6 @@ export const config = {
     "/",
     "/api/chat/:path*",
     "/api/sandbox/:path*",
-    "/((?!api/auth|login|_next/static|_next/image|favicon.ico).*)",
+    "/((?!api/auth|api/internal|login|_next/static|_next/image|favicon.ico).*)",
   ],
 };

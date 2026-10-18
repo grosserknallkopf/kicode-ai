@@ -106,6 +106,31 @@ class D1RestDatabase implements D1Database {
   async execute<T = unknown>(
     queries: D1RestQuery[]
   ): Promise<D1Result<T>[]> {
+    const proxyUrl = process.env.DB_PROXY_URL;
+    const proxySecret = process.env.DB_PROXY_SECRET;
+
+    if (proxyUrl && proxySecret) {
+      const response = await fetch(proxyUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-db-secret": proxySecret,
+        },
+        body: JSON.stringify({ batch: queries }),
+        cache: "no-store",
+      });
+      const payload = (await response.json()) as {
+        result?: D1Result<T>[];
+        error?: string;
+      };
+      if (!response.ok) {
+        throw new Error(
+          `D1-Proxy-Fehler: ${payload.error ?? `HTTP ${response.status}`}`
+        );
+      }
+      return payload.result ?? [];
+    }
+
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`,
       {
@@ -163,13 +188,21 @@ export async function getDb(): Promise<D1Database> {
     // Not running on Cloudflare – fall back to the D1 REST API.
   }
 
+  const proxyUrl = process.env.DB_PROXY_URL;
+  const proxySecret = process.env.DB_PROXY_SECRET;
+
+  if (proxyUrl && proxySecret) {
+    cachedDb = new D1RestDatabase("", "", "");
+    return cachedDb;
+  }
+
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID;
   const token = process.env.CLOUDFLARE_D1_API_TOKEN;
 
   if (!accountId || !databaseId || !token) {
     throw new Error(
-      "D1-Umgebungsvariablen fehlen: CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN."
+      "D1-Konfiguration fehlt: entweder DB_PROXY_URL + DB_PROXY_SECRET oder CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_D1_DATABASE_ID, CLOUDFLARE_D1_API_TOKEN setzen."
     );
   }
 
