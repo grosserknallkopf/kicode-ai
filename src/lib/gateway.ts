@@ -7,6 +7,7 @@ import type { GatewayProviderOptions } from "@ai-sdk/gateway";
  * Features:
  * - sort: 'cost' → Provider nach niedrigsten Kosten sortiert
  * - disallowPromptTraining: true → KEINE Provider, die Prompts für Training nutzen
+ * - zeroDataRetention: true → nur Provider mit Zero-Data-Retention-Vereinbarung
  * - has: ['tool-use'] → nur Provider die Tool-Calls unterstützen
  */
 export const gateway = createGateway({
@@ -26,6 +27,7 @@ export const FALLBACK_MODELS = [
  * Standard-Gateway-Optionen:
  * - Nach Kosten sortieren
  * - Kein Prompt-Training
+ * - Zero Data Retention
  * - Tool-Use erforderlich
  * - User-Tracking für Multi-User
  */
@@ -37,6 +39,7 @@ export function getGatewayOptions(
     gateway: {
       sort: "cost",
       disallowPromptTraining: true,
+      zeroDataRetention: true,
       has: ["tool-use"],
       user: userId,
       tags: ["kicode-agent", ...tags],

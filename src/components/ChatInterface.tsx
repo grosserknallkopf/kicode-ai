@@ -1,19 +1,107 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import type { UIMessage } from "ai";
 import { useRef, useEffect, useState, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { CodePreview } from "./CodePreview";
+import { CodePreview, type ProjectFiles } from "./CodePreview";
 
-interface CodeFile {
-  code: string;
-  language: string;
-  filename?: string;
+const TOOL_LABELS: Record<string, string> = {
+  executeCode: "Programm ausführen",
+  createFile: "Datei anlegen",
+  searchWeb: "Im Internet suchen",
+};
+
+function filePathForLanguage(language: string): string | null {
+  switch (language.toLowerCase()) {
+    case "html":
+      return "index.html";
+    case "css":
+      return "style.css";
+    case "js":
+    case "javascript":
+    case "typescript":
+    case "ts":
+      return "script.js";
+    case "python":
+    case "py":
+      return "main.py";
+    default:
+      return null;
+  }
+}
+
+function extractFencedBlocks(
+  text: string
+): { language: string; code: string }[] {
+  const blocks: { language: string; code: string }[] = [];
+  const pattern = /```([a-zA-Z0-9+#.-]*)[^\n]*\n([\s\S]*?)(?:```|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const language = (match[1] ?? "").toLowerCase();
+    const code = (match[2] ?? "").replace(/\n$/, "");
+    if (code.trim()) blocks.push({ language, code });
+  }
+  return blocks;
+}
+
+function collectProjectFiles(messages: UIMessage[]): ProjectFiles {
+  const files: ProjectFiles = {};
+
+  for (const message of messages) {
+    for (const part of message.parts ?? []) {
+      const toolPart = part as {
+        type: string;
+        input?: { path?: string; content?: string };
+        output?: { code?: string; language?: string; filename?: string };
+      };
+
+      if (toolPart.type === "tool-createFile") {
+        const input = toolPart.input;
+        if (input?.path && typeof input.content === "string") {
+          files[input.path] = input.content;
+        }
+      }
+
+      if (toolPart.type === "tool-executeCode" && toolPart.output?.code) {
+        const language = toolPart.output.language ?? "javascript";
+        const path =
+          toolPart.output.filename ||
+          filePathForLanguage(language) ||
+          "script.js";
+        files[path] = toolPart.output.code;
+      }
+    }
+  }
+
+  const latestAssistant = [...messages]
+    .reverse()
+    .find((message) => message.role === "assistant");
+
+  if (latestAssistant) {
+    const text = (latestAssistant.parts ?? [])
+      .filter((part) => part.type === "text")
+      .map((part) => (part as { text: string }).text)
+      .join("");
+    for (const block of extractFencedBlocks(text)) {
+      const path = filePathForLanguage(block.language);
+      if (path && !files[path]) {
+        files[path] = block.code;
+      }
+    }
+  }
+
+  return files;
+}
+
+interface ConversationSummary {
+  id: string;
+  title: string;
+  updated_at: string;
+  message_count: number;
 }
 
 interface ChatInterfaceProps {
@@ -21,46 +109,300 @@ interface ChatInterfaceProps {
   userName: string;
 }
 
-export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
+export function ChatInterface({ userName }: ChatInterfaceProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [activeCode, setActiveCode] = useState<CodeFile | null>(null);
+  const previewClosedByUser = useRef(false);
+  const activeIdRef = useRef<string | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [files, setFiles] = useState<ProjectFiles>({});
+  const [activeFile, setActiveFile] = useState<string>("");
   const [showPreview, setShowPreview] = useState(false);
+  const [isBackgroundRunning, setIsBackgroundRunning] = useState(false);
   const [input, setInput] = useState("");
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null);
+  const [loadingConversation, setLoadingConversation] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [status, setStatus] = useState<"ready" | "submitted" | "streaming">(
+    "ready"
+  );
+  const [error, setError] = useState<{ message: string } | null>(null);
 
-  const { messages, status, error, sendMessage, regenerate } = useChat({
-    transport: new DefaultChatTransport({ api: "/api/chat" }),
-    onToolCall({ toolCall }) {
-      // Tool results are rendered from message.parts in AI SDK v7.
-      // Keep this callback for compatibility with client-side tool calls.
-      const call = toolCall as any;
-      if (call.toolName === "executeCode" && call.state === "result") {
-        const result = call.result as any;
-        if (result?.code) {
-          setActiveCode({
-            code: result.code,
-            language: result.language || "javascript",
-            filename: result.filename,
-          });
-          setShowPreview(true);
+  const refreshConversations = useCallback(async () => {
+    try {
+      const response = await fetch("/api/conversations");
+      if (!response.ok) return [];
+      const data = (await response.json()) as {
+        conversations?: ConversationSummary[];
+      };
+      const list = data.conversations ?? [];
+      setConversations(list);
+      return list;
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimer.current) {
+      clearTimeout(pollTimer.current);
+      pollTimer.current = null;
+    }
+    setIsBackgroundRunning(false);
+  }, []);
+
+  const pollConversation = useCallback(
+    async function poll(id: string) {
+      try {
+        const response = await fetch(`/api/conversations/${id}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          conversation: { id: string; title: string; status?: string };
+          messages: UIMessage[];
+        };
+        if (activeIdRef.current !== id) return;
+        setMessages(data.messages ?? []);
+        if (data.conversation.status === "streaming") {
+          setStatus("streaming");
+          setIsBackgroundRunning(true);
+          pollTimer.current = setTimeout(() => void poll(id), 900);
+        } else {
+          setStatus("ready");
+          setIsBackgroundRunning(false);
+          void refreshConversations();
         }
-        if (result?.output) {
-          console.log("[Sandbox]", result.output);
+      } catch {
+        if (activeIdRef.current === id) {
+          pollTimer.current = setTimeout(() => void poll(id), 4000);
         }
       }
     },
-  });
+    [refreshConversations, setMessages]
+  );
+
+  const loadConversation = useCallback(
+    async (id: string) => {
+      stopPolling();
+      setLoadingConversation(true);
+      setSidebarOpen(false);
+      try {
+        const response = await fetch(`/api/conversations/${id}`);
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          conversation: { id: string; title: string; status?: string };
+          messages: UIMessage[];
+        };
+        setMessages(data.messages ?? []);
+        setActiveConversationId(data.conversation.id);
+        activeIdRef.current = data.conversation.id;
+        if (data.conversation.status === "streaming") {
+          setStatus("streaming");
+          setIsBackgroundRunning(true);
+          pollTimer.current = setTimeout(
+            () => void pollConversation(id),
+            800
+          );
+        } else {
+          setStatus("ready");
+          setIsBackgroundRunning(false);
+        }
+      } finally {
+        setLoadingConversation(false);
+      }
+    },
+    [pollConversation, setMessages, stopPolling]
+  );
+
+  useEffect(() => {
+    activeIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    void (async () => {
+      const list = await refreshConversations();
+      const latest = list.find((item) => item.message_count > 0);
+      if (latest) {
+        await loadConversation(latest.id);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const next = collectProjectFiles(messages);
+    setFiles(next);
+    const names = Object.keys(next);
+    if (names.length > 0) {
+      setActiveFile((current) =>
+        current && next[current]
+          ? current
+          : next["index.html"]
+            ? "index.html"
+            : names[0]
+      );
+      if (!previewClosedByUser.current) {
+        setShowPreview(true);
+      }
+    }
+  }, [messages]);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setInput(event.target.value);
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  const ensureConversation = useCallback(async (): Promise<string | null> => {
+    if (activeConversationId) return activeConversationId;
+    try {
+      const response = await fetch("/api/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as {
+        conversation: { id: string; title: string };
+      };
+      setActiveConversationId(data.conversation.id);
+      setConversations((current) => [
+        {
+          id: data.conversation.id,
+          title: data.conversation.title,
+          updated_at: new Date().toISOString(),
+          message_count: 0,
+        },
+        ...current,
+      ]);
+      return data.conversation.id;
+    } catch {
+      return null;
+    }
+  }, [activeConversationId]);
+
+  const startGeneration = useCallback(
+    async (outgoingMessages: UIMessage[], conversationId: string) => {
+      setError(null);
+      setStatus("submitted");
+      try {
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: outgoingMessages,
+            conversationId,
+          }),
+        });
+        if (!response.ok) {
+          const detail = await response.text();
+          throw new Error(
+            detail || `Die Anfrage ist fehlgeschlagen (${response.status}).`
+          );
+        }
+        setStatus("streaming");
+        setIsBackgroundRunning(true);
+        if (pollTimer.current) clearTimeout(pollTimer.current);
+        pollTimer.current = setTimeout(
+          () => void pollConversation(conversationId),
+          700
+        );
+      } catch (caught) {
+        setStatus("ready");
+        setIsBackgroundRunning(false);
+        setError({
+          message:
+            caught instanceof Error
+              ? caught.message
+              : "Die Anfrage ist fehlgeschlagen.",
+        });
+      }
+    },
+    [pollConversation]
+  );
+
+  const sendText = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || status === "submitted" || status === "streaming") return;
+      stopPolling();
+      const conversationId = await ensureConversation();
+      if (!conversationId) return;
+
+      const userMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        parts: [{ type: "text", text: trimmed }],
+      } as UIMessage;
+      const outgoing = [...messages, userMessage];
+      setMessages(outgoing);
+      await startGeneration(outgoing, conversationId);
+    },
+    [ensureConversation, messages, startGeneration, status, stopPolling]
+  );
+
+  const retry = useCallback(async () => {
+    if (status !== "ready") return;
+    const lastUserIndex = [...messages]
+      .map((message) => message.role)
+      .lastIndexOf("user");
+    if (lastUserIndex < 0) return;
+
+    const conversationId = await ensureConversation();
+    if (!conversationId) return;
+
+    const outgoing = messages.slice(0, lastUserIndex + 1);
+    setMessages(outgoing);
+    await startGeneration(outgoing, conversationId);
+  }, [ensureConversation, messages, startGeneration, status]);
+
+  const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     const text = input.trim();
-    if (!text || status === "submitted" || status === "streaming") return;
+    if (!text) return;
     setInput("");
-    sendMessage({ text });
+    await sendText(text);
   };
+
+  const startNewChat = useCallback(() => {
+    stopPolling();
+    setActiveConversationId(null);
+    activeIdRef.current = null;
+    setMessages([]);
+    setFiles({});
+    setActiveFile("");
+    setShowPreview(false);
+    previewClosedByUser.current = false;
+    setSidebarOpen(false);
+    setStatus("ready");
+    setError(null);
+  }, [stopPolling]);
+
+  const removeConversation = useCallback(
+    async (id: string) => {
+      if (!window.confirm("Diese Aufgabe wirklich löschen?")) return;
+      const response = await fetch(`/api/conversations/${id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) return;
+      setConversations((current) => current.filter((item) => item.id !== id));
+      if (activeConversationId === id) {
+        stopPolling();
+        setActiveConversationId(null);
+        activeIdRef.current = null;
+        setMessages([]);
+        setStatus("ready");
+        setError(null);
+      }
+    },
+    [activeConversationId, setMessages, stopPolling]
+  );
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -70,21 +412,185 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // Extract code blocks from message content for preview
-  const handleExtractCode = useCallback((codeStr: string, lang: string) => {
-    setActiveCode({ code: codeStr, language: lang });
+  const handleExtractCode = useCallback(
+    (codeStr: string, lang: string) => {
+      const path = filePathForLanguage(lang) ?? "snippet.txt";
+      setFiles((current) => ({ ...current, [path]: codeStr }));
+      setActiveFile(path);
+      previewClosedByUser.current = false;
+      setShowPreview(true);
+    },
+    []
+  );
+
+  const openPreview = useCallback(() => {
+    previewClosedByUser.current = false;
     setShowPreview(true);
   }, []);
 
+  const closePreview = useCallback(() => {
+    previewClosedByUser.current = true;
+    setShowPreview(false);
+  }, []);
+
+  const activeTitle =
+    conversations.find((item) => item.id === activeConversationId)?.title ??
+    "Neue Aufgabe";
+
   return (
     <div className="flex h-full">
+      {/* Conversation sidebar */}
+      <aside
+        className={`${
+          sidebarOpen ? "flex" : "hidden"
+        } md:flex flex-col w-full md:w-64 shrink-0 border-r border-border bg-card/30`}
+      >
+        <div className="p-3 border-b border-border">
+          <button
+            onClick={startNewChat}
+            className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+            Neue Aufgabe
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <p className="px-2 pt-1 pb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+            Verlauf
+          </p>
+          {conversations.length === 0 ? (
+            <p className="px-2 text-xs text-muted-foreground">
+              Noch keine Aufgaben gespeichert.
+            </p>
+          ) : (
+            conversations.map((conversation) => (
+              <div
+                key={conversation.id}
+                className={`group flex items-center gap-1 rounded-lg px-2 py-2 text-sm transition-colors ${
+                  conversation.id === activeConversationId
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+                }`}
+              >
+                <button
+                  onClick={() => void loadConversation(conversation.id)}
+                  className="flex-1 text-left truncate"
+                  title={conversation.title}
+                >
+                  {conversation.title || "Neue Aufgabe"}
+                </button>
+                <button
+                  onClick={() => void removeConversation(conversation.id)}
+                  className="opacity-0 group-hover:opacity-100 shrink-0 p-1 rounded hover:text-destructive transition-opacity"
+                  aria-label="Chat löschen"
+                >
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3M4 7h16"
+                    />
+                  </svg>
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
       {/* Chat Panel */}
       <div
-        className={`flex flex-col h-full ${showPreview ? "w-[55%]" : "w-full"} transition-all duration-300`}
+        className={`${
+          sidebarOpen ? "hidden" : "flex"
+        } md:flex flex-col h-full min-w-0 ${
+          showPreview ? "w-[55%]" : "w-full"
+        } transition-all duration-300`}
       >
+        {/* Panel header */}
+        <div className="flex items-center gap-2 px-4 h-10 border-b border-border bg-card/30">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="md:hidden p-1.5 rounded-lg hover:bg-secondary text-muted-foreground"
+            aria-label="Verlauf öffnen"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M4 6h16M4 12h16M4 18h16"
+              />
+            </svg>
+          </button>
+          <span className="text-xs text-muted-foreground truncate">
+            {activeTitle}
+          </span>
+          {loadingConversation && (
+            <span className="text-[10px] text-muted-foreground">lädt …</span>
+          )}
+          {Object.keys(files).length > 0 && !showPreview && (
+            <button
+              onClick={openPreview}
+              className="ml-auto flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+            >
+              <svg
+                className="w-3.5 h-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z"
+                />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+                />
+              </svg>
+              Vorschau
+            </button>
+          )}
+        </div>
+
         {/* Messages */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-6">
+            {isBackgroundRunning && (
+              <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-primary">
+                <span className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+                KiCode arbeitet im Hintergrund weiter – du kannst die Seite
+                bedenkenlos neu laden.
+              </div>
+            )}
+
             {/* Welcome */}
             {messages.length === 0 && (
               <div className="text-center py-12 space-y-4">
@@ -121,13 +627,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                   ].map((suggestion) => (
                     <button
                       key={suggestion}
-                      onClick={() => {
-                        setInput(suggestion);
-                        setTimeout(() => {
-                          setInput("");
-                          sendMessage({ text: suggestion });
-                        }, 100);
-                      }}
+                      onClick={() => void sendText(suggestion)}
                       className="text-xs bg-secondary hover:bg-secondary/80 text-muted-foreground hover:text-foreground rounded-full px-3 py-1.5 transition-colors"
                     >
                       {suggestion}
@@ -214,7 +714,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                                             d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"
                                           />
                                         </svg>
-                                        In Preview öffnen
+                                        In Vorschau öffnen
                                       </button>
                                     </div>
                                     <SyntaxHighlighter
@@ -242,7 +742,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                             },
                           }}
                         >
-                          {textContent || "🤔"}
+                          {textContent}
                         </ReactMarkdown>
                       </div>
                     ) : null;
@@ -254,15 +754,18 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                       const toolPart = part as typeof part & {
                         state: string;
                         toolCallId: string;
-                        args?: unknown;
-                        result?: unknown;
+                        input?: unknown;
+                        output?: unknown;
+                        errorText?: string;
                       };
+                      const done = toolPart.state === "output-available";
+                      const failed = toolPart.state === "output-error";
                       return (
                         <div
                           key={i}
                           className="flex items-center gap-2 text-xs text-muted-foreground bg-secondary/50 rounded-lg px-3 py-2 mt-2"
                         >
-                          {toolPart.state === "result" ? (
+                          {done ? (
                             <svg
                               className="w-3.5 h-3.5 text-green-500"
                               fill="none"
@@ -274,6 +777,20 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                                 strokeLinejoin="round"
                                 strokeWidth={2}
                                 d="M5 13l4 4L19 7"
+                              />
+                            </svg>
+                          ) : failed ? (
+                            <svg
+                              className="w-3.5 h-3.5 text-destructive"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
                               />
                             </svg>
                           ) : (
@@ -298,10 +815,15 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                             </svg>
                           )}
                           <span>
-                            🛠️ {part.type.replace(/^tool-/, "")}
-                            {toolPart.state === "result"
-                              ? " ✓ Erledigt"
-                              : " läuft…"}
+                            🛠️{" "}
+                            {TOOL_LABELS[
+                              part.type.replace(/^tool-/, "")
+                            ] ?? part.type.replace(/^tool-/, "")}
+                            {done
+                              ? " · fertig"
+                              : failed
+                                ? " · Fehler"
+                                : " · arbeitet …"}
                           </span>
                         </div>
                       );
@@ -351,7 +873,7 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
                   <p className="font-medium mb-1">Fehler</p>
                   <p className="text-destructive/80">{error.message}</p>
                   <button
-                    onClick={() => regenerate()}
+                    onClick={() => void retry()}
                     className="mt-2 text-xs underline hover:no-underline"
                   >
                     Erneut versuchen
@@ -402,9 +924,12 @@ export function ChatInterface({ userId, userName }: ChatInterfaceProps) {
 
       {/* Preview Panel */}
       <CodePreview
-        code={activeCode}
+        files={files}
+        activeFile={activeFile}
+        onSelectFile={setActiveFile}
         isOpen={showPreview}
-        onClose={() => setShowPreview(false)}
+        onClose={closePreview}
+        isLive={status === "streaming"}
       />
     </div>
   );

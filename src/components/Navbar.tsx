@@ -1,11 +1,34 @@
 "use client";
 
 import { useSession, signOut } from "next-auth/react";
-import { useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 export function Navbar() {
   const { data: session, status } = useSession();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (status !== "authenticated") {
+      setIsAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/me");
+        if (!response.ok) return;
+        const data = (await response.json()) as { isAdmin?: boolean };
+        if (!cancelled) setIsAdmin(Boolean(data.isAdmin));
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
 
   if (status === "loading") {
     return (
@@ -84,6 +107,15 @@ export function Navbar() {
                       {session.user.email}
                     </p>
                   </div>
+                  {isAdmin ? (
+                    <Link
+                      href="/admin"
+                      onClick={() => setMenuOpen(false)}
+                      className="block w-full text-left px-3 py-2 text-xs hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      Admin-Bereich
+                    </Link>
+                  ) : null}
                   <button
                     onClick={() => signOut()}
                     className="w-full text-left px-3 py-2 text-xs hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"

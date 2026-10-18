@@ -17,6 +17,14 @@
   "images": {
     "binding": "IMAGES"
   },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kicode-ai-db",
+      "database_id": "ef065925-ab07-4e33-9d34-3f3bb27d76e2",
+      "migrations_dir": "migrations"
+    }
+  ],
   "workers_dev": true,
   "preview_urls": true,
   "observability": {

@@ -2,6 +2,8 @@ import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import Google from "next-auth/providers/google";
+import { getUserByUsername } from "@/lib/db";
+import { verifyPassword } from "@/lib/password";
 
 const providers = [];
 
@@ -30,27 +32,43 @@ providers.push(
       username: { label: "Benutzername", type: "text" },
       password: { label: "Passwort", type: "password" },
     },
-    authorize(credentials) {
-      const expectedUsername = process.env.AUTH_USERNAME;
-      const expectedPassword = process.env.AUTH_PASSWORD;
-
-      if (!expectedUsername || !expectedPassword) {
-        return null;
-      }
-
+    async authorize(credentials) {
       const username =
-        typeof credentials?.username === "string" ? credentials.username : "";
+        typeof credentials?.username === "string"
+          ? credentials.username.trim().toLowerCase()
+          : "";
       const password =
         typeof credentials?.password === "string" ? credentials.password : "";
 
-      if (username === expectedUsername && password === expectedPassword) {
-        return {
-          id: `local:${expectedUsername}`,
-          name: expectedUsername,
-        };
+      if (!username || !password) return null;
+
+      const envUsername = process.env.AUTH_USERNAME?.trim().toLowerCase();
+      const envPassword = process.env.AUTH_PASSWORD;
+
+      if (envUsername && envPassword && username === envUsername) {
+        if (password === envPassword) {
+          return {
+            id: `local:${process.env.AUTH_USERNAME}`,
+            name: process.env.AUTH_USERNAME,
+            role: "admin",
+          };
+        }
+        return null;
       }
 
-      return null;
+      const user = await getUserByUsername(username);
+      if (!user || user.disabled || !user.password_hash) return null;
+
+      const valid = await verifyPassword(password, user.password_hash);
+      if (!valid) return null;
+
+      return {
+        id: user.id,
+        name: user.name || user.username || username,
+        email: user.email,
+        image: user.image,
+        role: user.role,
+      };
     },
   }),
 );
@@ -64,9 +82,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     authorized({ auth }) {
       return !!auth?.user;
     },
+    jwt({ token, user }) {
+      if (user) {
+        token.role = (user as { role?: string }).role ?? "user";
+        token.name = user.name;
+        token.email = user.email;
+      }
+      return token;
+    },
     session({ session, token }) {
-      if (session.user && token.sub) {
-        session.user.id = token.sub;
+      if (session.user) {
+        if (token.sub) session.user.id = token.sub;
+        (session.user as { role?: string }).role =
+          (token.role as string | undefined) ?? "user";
       }
       return session;
     },
